@@ -1,266 +1,229 @@
 import cv2
 import mediapipe as mp
-import random
 import math
+import random
 
-# ============================================================
-# VIRTUAL DRAG AND DROP GAME
-# OpenCV + MediaPipe
-# ============================================================
+# =========================================================
+# SETTINGS
+# =========================================================
 
-# -----------------------------
-# Game settings
-# -----------------------------
 WIDTH = 1280
 HEIGHT = 720
 
-BOX_SIZE = 80
-TARGET_SIZE = 120
+OBJECT_RADIUS = 32
+TARGET_W = 130
+TARGET_H = 105
 
-TOTAL_OBJECTS = 5
+PINCH_RATIO = 0.45
+GRAB_DISTANCE = 70
+DROP_DISTANCE = 85
 
-# Colors in BGR format
+# OpenCV = BGR
 COLORS = {
     "RED": (0, 0, 255),
-    "GREEN": (0, 255, 0),
     "BLUE": (255, 0, 0),
+    "GREEN": (0, 255, 0),
     "YELLOW": (0, 255, 255),
     "PURPLE": (255, 0, 255)
 }
 
-COLOR_NAMES = list(COLORS.keys())
+NAMES = list(COLORS.keys())
 
+# =========================================================
+# OBJECTS
+# =========================================================
 
-# -----------------------------
-# Create draggable objects
-# -----------------------------
-def create_objects():
+object_x = [140, 390, 640, 890, 1140]
 
-    objects = []
+objects = []
 
-    positions = [
-        (150, 150),
-        (350, 180),
-        (550, 130),
-        (750, 180),
-        (950, 130)
-    ]
+for i, name in enumerate(NAMES):
+    objects.append({
+        "name": name,
+        "x": object_x[i],
+        "y": 150,
+        "done": False
+    })
 
-    for i in range(TOTAL_OBJECTS):
+# =========================================================
+# TARGET BOXES
+# =========================================================
 
-        color_name = COLOR_NAMES[i]
-        color = COLORS[color_name]
+targets = []
 
-        x, y = positions[i]
+for i, name in enumerate(NAMES):
+    targets.append({
+        "name": name,
+        "x": object_x[i],
+        "y": 570
+    })
 
-        obj = {
-            "x": x,
-            "y": y,
-            "size": BOX_SIZE,
-            "color": color,
-            "name": color_name,
-            "dragging": False,
-            "placed": False
-        }
+# =========================================================
+# GAME VARIABLES
+# =========================================================
 
-        objects.append(obj)
+score = 0
+selected = None
+offset_x = 0
+offset_y = 0
 
-    return objects
-
-
-# -----------------------------
-# Create target areas
-# -----------------------------
-def create_targets():
-
-    targets = []
-
-    positions = [
-        (150, 520),
-        (350, 520),
-        (550, 520),
-        (750, 520),
-        (950, 520)
-    ]
-
-    for i in range(TOTAL_OBJECTS):
-
-        color_name = COLOR_NAMES[i]
-        color = COLORS[color_name]
-
-        x, y = positions[i]
-
-        target = {
-            "x": x,
-            "y": y,
-            "size": TARGET_SIZE,
-            "color": color,
-            "name": color_name
-        }
-
-        targets.append(target)
-
-    return targets
-
-
-# -----------------------------
-# Check if point is inside box
-# -----------------------------
-def point_inside_box(px, py, x, y, size):
-
-    return (
-        x <= px <= x + size and
-        y <= py <= y + size
-    )
-
-
-# -----------------------------
-# Check distance
-# -----------------------------
-def distance(x1, y1, x2, y2):
-
-    return math.sqrt(
-        (x1 - x2) ** 2 +
-        (y1 - y2) ** 2
-    )
-
-
-# -----------------------------
-# Check whether object is
-# correctly placed
-# -----------------------------
-def check_placement(obj, target):
-
-    object_center_x = obj["x"] + obj["size"] // 2
-    object_center_y = obj["y"] + obj["size"] // 2
-
-    target_center_x = target["x"] + target["size"] // 2
-    target_center_y = target["y"] + target["size"] // 2
-
-    d = distance(
-        object_center_x,
-        object_center_y,
-        target_center_x,
-        target_center_y
-    )
-
-    return (
-        d < 60 and
-        obj["name"] == target["name"]
-    )
-
-
-# ============================================================
-# MediaPipe setup
-# ============================================================
+# =========================================================
+# MEDIAPIPE
+# =========================================================
 
 mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
+mp_draw = mp.solutions.drawing_utils
 
 hands = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=1,
-    min_detection_confidence=0.6,
-    min_tracking_confidence=0.6
+    model_complexity=1,
+    min_detection_confidence=0.75,
+    min_tracking_confidence=0.75
 )
 
-
-# ============================================================
-# Camera setup
-# ============================================================
+# =========================================================
+# CAMERA
+# =========================================================
 
 cap = cv2.VideoCapture(0)
 
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
 
+# =========================================================
+# FUNCTIONS
+# =========================================================
 
-if not cap.isOpened():
-
-    print("ERROR: Cannot open webcam.")
-
-    exit()
-
-
-# ============================================================
-# Initialize game
-# ============================================================
-
-objects = create_objects()
-targets = create_targets()
-
-score = 0
-dragged_object = None
-
-game_completed = False
+def distance(x1, y1, x2, y2):
+    return math.hypot(x2 - x1, y2 - y1)
 
 
-# ============================================================
-# Main game loop
-# ============================================================
+def reset_game():
 
-while True:
+    global score
+    global selected
 
-    success, frame = cap.read()
+    score = 0
+    selected = None
 
-    if not success:
-        print("ERROR: Cannot read webcam.")
-        break
+    for i, obj in enumerate(objects):
 
-
-    # Mirror webcam
-    frame = cv2.flip(frame, 1)
+        obj["x"] = object_x[i]
+        obj["y"] = 150
+        obj["done"] = False
 
 
-    # Convert BGR → RGB
-    rgb = cv2.cvtColor(
-        frame,
-        cv2.COLOR_BGR2RGB
+def random_position():
+
+    return (
+        random.randint(100, WIDTH - 100),
+        random.randint(120, 250)
     )
 
 
-    # Detect hand
-    results = hands.process(rgb)
+# =========================================================
+# MAIN LOOP
+# =========================================================
 
+while True:
 
-    index_x = None
-    index_y = None
+    ret, frame = cap.read()
 
-    # --------------------------------------------------------
-    # Hand detected
-    # --------------------------------------------------------
+    if not ret:
+        print("Camera not detected")
+        break
 
-    if results.multi_hand_landmarks:
+    # Mirror camera
+    frame = cv2.flip(frame, 1)
 
-        hand_landmarks = results.multi_hand_landmarks[0]
+    # =====================================================
+    # IMPORTANT:
+    # PROCESS RAW CAMERA BEFORE DRAWING ANY GAME GRAPHICS
+    # =====================================================
 
-        # Draw hand landmarks
-        mp_drawing.draw_landmarks(
-            frame,
-            hand_landmarks,
-            mp_hands.HAND_CONNECTIONS
-        )
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+    result = hands.process(rgb)
 
-        # Index finger tip
-        index_tip = hand_landmarks.landmark[
+    finger_x = None
+    finger_y = None
+    pinching = False
+
+    # =====================================================
+    # HAND DETECTION
+    # =====================================================
+
+    if result.multi_hand_landmarks:
+
+        hand = result.multi_hand_landmarks[0]
+
+        thumb = hand.landmark[
+            mp_hands.HandLandmark.THUMB_TIP
+        ]
+
+        index = hand.landmark[
             mp_hands.HandLandmark.INDEX_FINGER_TIP
         ]
 
+        wrist = hand.landmark[
+            mp_hands.HandLandmark.WRIST
+        ]
 
-        index_x = int(
-            index_tip.x * WIDTH
+        middle = hand.landmark[
+            mp_hands.HandLandmark.MIDDLE_FINGER_MCP
+        ]
+
+        # Pixel coordinates
+        tx = int(thumb.x * WIDTH)
+        ty = int(thumb.y * HEIGHT)
+
+        ix = int(index.x * WIDTH)
+        iy = int(index.y * HEIGHT)
+
+        wx = int(wrist.x * WIDTH)
+        wy = int(wrist.y * HEIGHT)
+
+        mx = int(middle.x * WIDTH)
+        my = int(middle.y * HEIGHT)
+
+        # Cursor = midpoint between thumb and index
+        finger_x = (tx + ix) // 2
+        finger_y = (ty + iy) // 2
+
+        # Pinch distance
+        pinch_distance = distance(
+            tx, ty,
+            ix, iy
         )
 
-        index_y = int(
-            index_tip.y * HEIGHT
+        # Hand size
+        hand_size = distance(
+            wx, wy,
+            mx, my
         )
 
+        if hand_size > 0:
 
-        # Draw cursor
+            pinch_ratio = pinch_distance / hand_size
+
+            if pinch_ratio < PINCH_RATIO:
+                pinching = True
+
+        # =================================================
+        # DRAW HAND
+        # =================================================
+
+        mp_draw.draw_landmarks(
+            frame,
+            hand,
+            mp_hands.HAND_CONNECTIONS
+        )
+
+        # Cursor
         cv2.circle(
             frame,
-            (index_x, index_y),
+            (finger_x, finger_y),
             12,
             (255, 255, 255),
             -1
@@ -268,417 +231,420 @@ while True:
 
         cv2.circle(
             frame,
-            (index_x, index_y),
-            16,
+            (finger_x, finger_y),
+            15,
             (0, 0, 0),
             2
         )
 
+    # =====================================================
+    # GRAB OBJECT
+    # =====================================================
 
-        # ----------------------------------------------------
-        # Thumb + index finger distance
-        # ----------------------------------------------------
+    if (
+        finger_x is not None
+        and pinching
+        and selected is None
+    ):
 
-        thumb_tip = hand_landmarks.landmark[
-            mp_hands.HandLandmark.THUMB_TIP
-        ]
+        for obj in objects:
 
-        thumb_x = int(
-            thumb_tip.x * WIDTH
-        )
+            if obj["done"]:
+                continue
 
-        thumb_y = int(
-            thumb_tip.y * HEIGHT
-        )
-
-
-        pinch_distance = distance(
-            index_x,
-            index_y,
-            thumb_x,
-            thumb_y
-        )
-
-
-        # Draw line between thumb and index
-        cv2.line(
-            frame,
-            (index_x, index_y),
-            (thumb_x, thumb_y),
-            (255, 255, 255),
-            2
-        )
-
-
-        # Pinch detection
-        is_pinching = pinch_distance < 45
-
-
-        # ----------------------------------------------------
-        # START DRAGGING
-        # ----------------------------------------------------
-
-        if is_pinching and dragged_object is None:
-
-            for obj in objects:
-
-                if obj["placed"]:
-                    continue
-
-                if point_inside_box(
-                    index_x,
-                    index_y,
-                    obj["x"],
-                    obj["y"],
-                    obj["size"]
-                ):
-
-                    dragged_object = obj
-                    obj["dragging"] = True
-
-                    break
-
-
-        # ----------------------------------------------------
-        # DRAG OBJECT
-        # ----------------------------------------------------
-
-        if dragged_object is not None:
-
-            obj = dragged_object
-
-            # Move object so its center follows finger
-            obj["x"] = index_x - obj["size"] // 2
-            obj["y"] = index_y - obj["size"] // 2
-
-
-            # Keep object inside screen
-            obj["x"] = max(
-                0,
-                min(
-                    WIDTH - obj["size"],
-                    obj["x"]
-                )
+            d = distance(
+                finger_x,
+                finger_y,
+                obj["x"],
+                obj["y"]
             )
 
-            obj["y"] = max(
-                0,
-                min(
-                    HEIGHT - obj["size"],
-                    obj["y"]
-                )
+            if d < GRAB_DISTANCE:
+
+                selected = obj
+
+                offset_x = obj["x"] - finger_x
+                offset_y = obj["y"] - finger_y
+
+                break
+
+    # =====================================================
+    # DRAG OBJECT
+    # =====================================================
+
+    if (
+        selected is not None
+        and finger_x is not None
+        and pinching
+    ):
+
+        selected["x"] = finger_x + offset_x
+        selected["y"] = finger_y + offset_y
+
+        # Keep inside camera
+        selected["x"] = max(
+            OBJECT_RADIUS,
+            min(
+                WIDTH - OBJECT_RADIUS,
+                selected["x"]
+            )
+        )
+
+        selected["y"] = max(
+            100,
+            min(
+                HEIGHT - OBJECT_RADIUS - 10,
+                selected["y"]
+            )
+        )
+
+    # =====================================================
+    # RELEASE / DROP
+    # =====================================================
+
+    if not pinching and selected is not None:
+
+        correct = False
+
+        for target in targets:
+
+            d = distance(
+                selected["x"],
+                selected["y"],
+                target["x"],
+                target["y"]
             )
 
+            if d < DROP_DISTANCE:
 
-            # ------------------------------------------------
-            # RELEASE OBJECT
-            # ------------------------------------------------
+                if selected["name"] == target["name"]:
 
-            if not is_pinching:
+                    selected["x"] = target["x"]
+                    selected["y"] = target["y"]
 
-                obj["dragging"] = False
+                    selected["done"] = True
 
-                placed_correctly = False
+                    score += 1
 
-                for target in targets:
+                    correct = True
 
-                    if check_placement(
-                        obj,
-                        target
-                    ):
+                break
 
-                        # Snap to target
-                        obj["x"] = (
-                            target["x"]
-                            + target["size"] // 2
-                            - obj["size"] // 2
-                        )
+        # Wrong target
+        if not correct:
 
-                        obj["y"] = (
-                            target["y"]
-                            + target["size"] // 2
-                            - obj["size"] // 2
-                        )
+            selected["x"], selected["y"] = random_position()
 
-                        obj["placed"] = True
+        selected = None
 
-                        score += 1
-
-                        placed_correctly = True
-
-                        break
-
-
-                # Wrong location
-                if not placed_correctly:
-
-                    # Return object to original area
-                    obj["x"] = random.randint(
-                        100,
-                        WIDTH - 200
-                    )
-
-                    obj["y"] = random.randint(
-                        100,
-                        280
-                    )
-
-
-                dragged_object = None
-
-
-    # ========================================================
-    # Draw targets
-    # ========================================================
-
-    for target in targets:
-
-        x = target["x"]
-        y = target["y"]
-        size = target["size"]
-        color = target["color"]
-
-
-        # Target background
-        overlay = frame.copy()
-
-        cv2.rectangle(
-            overlay,
-            (x, y),
-            (x + size, y + size),
-            color,
-            -1
-        )
-
-        # Transparency
-        cv2.addWeighted(
-            overlay,
-            0.25,
-            frame,
-            0.75,
-            0,
-            frame
-        )
-
-
-        # Target border
-        cv2.rectangle(
-            frame,
-            (x, y),
-            (x + size, y + size),
-            color,
-            4
-        )
-
-
-        # Target text
-        cv2.putText(
-            frame,
-            target["name"],
-            (x - 5, y + size + 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            2
-        )
-
-
-    # ========================================================
-    # Draw draggable objects
-    # ========================================================
-
-    for obj in objects:
-
-        if obj["placed"]:
-            continue
-
-
-        x = obj["x"]
-        y = obj["y"]
-        size = obj["size"]
-        color = obj["color"]
-
-
-        # Object
-        cv2.rectangle(
-            frame,
-            (x, y),
-            (x + size, y + size),
-            color,
-            -1
-        )
-
-
-        # Border
-        cv2.rectangle(
-            frame,
-            (x, y),
-            (x + size, y + size),
-            (255, 255, 255),
-            3
-        )
-
-
-        # Object name
-        text_size = cv2.getTextSize(
-            obj["name"],
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            2
-        )[0]
-
-
-        text_x = (
-            x +
-            (size - text_size[0]) // 2
-        )
-
-        text_y = (
-            y +
-            (size + text_size[1]) // 2
-        )
-
-
-        cv2.putText(
-            frame,
-            obj["name"],
-            (text_x, text_y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            2
-        )
-
-
-    # ========================================================
-    # Header
-    # ========================================================
+    # =====================================================
+    # TOP INSTRUCTION BAR
+    # =====================================================
 
     cv2.rectangle(
         frame,
         (0, 0),
-        (WIDTH, 70),
-        (30, 30, 30),
+        (WIDTH, 75),
+        (20, 20, 20),
         -1
     )
-
 
     cv2.putText(
         frame,
         "VIRTUAL DRAG & DROP",
-        (30, 45),
+        (30, 48),
         cv2.FONT_HERSHEY_SIMPLEX,
-        1,
+        1.0,
         (255, 255, 255),
         2
     )
 
-
     cv2.putText(
         frame,
-        f"SCORE: {score}/{TOTAL_OBJECTS}",
-        (WIDTH - 250, 45),
+        "Pinch to Grab",
+        (410, 45),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
+        0.65,
         (255, 255, 255),
         2
     )
 
-
-    # ========================================================
-    # Instructions
-    # ========================================================
+    cv2.putText(
+        frame,
+        "Drag to Matching Box",
+        (620, 45),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2
+    )
 
     cv2.putText(
         frame,
-        "Pinch thumb + index finger to drag",
-        (30, HEIGHT - 30),
+        f"SCORE {score}/5",
+        (1080, 45),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.7,
         (255, 255, 255),
         2
     )
 
+    # =====================================================
+    # TARGET AREA
+    # =====================================================
 
-    # ========================================================
-    # Game completed
-    # ========================================================
+    # Transparent-looking dark target panel
+    overlay = frame.copy()
 
-    if score == TOTAL_OBJECTS:
+    cv2.rectangle(
+        overlay,
+        (0, 430),
+        (WIDTH, HEIGHT),
+        (25, 25, 25),
+        -1
+    )
 
-        game_completed = True
+    frame = cv2.addWeighted(
+        overlay,
+        0.72,
+        frame,
+        0.28,
+        0
+    )
 
+    # Target heading
+    cv2.putText(
+        frame,
+        "MATCHING TARGETS",
+        (520, 465),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 255),
+        2
+    )
+
+    # =====================================================
+    # DRAW TARGET BOXES
+    # =====================================================
+
+    for target in targets:
+
+        color = COLORS[target["name"]]
+
+        x = target["x"]
+        y = target["y"]
+
+        # Outer colored box
         cv2.rectangle(
             frame,
-            (300, 250),
-            (980, 450),
-            (30, 30, 30),
+            (
+                x - TARGET_W // 2,
+                y - TARGET_H // 2
+            ),
+            (
+                x + TARGET_W // 2,
+                y + TARGET_H // 2
+            ),
+            color,
+            4
+        )
+
+        # Inner dark box
+        cv2.rectangle(
+            frame,
+            (
+                x - TARGET_W // 2 + 8,
+                y - TARGET_H // 2 + 8
+            ),
+            (
+                x + TARGET_W // 2 - 8,
+                y + TARGET_H // 2 - 8
+            ),
+            (35, 35, 35),
             -1
         )
 
+        # Target name
+        text_size = cv2.getTextSize(
+            target["name"],
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            2
+        )[0]
 
         cv2.putText(
             frame,
-            "GAME COMPLETED!",
-            (430, 330),
+            target["name"],
+            (
+                x - text_size[0] // 2,
+                y + 7
+            ),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1.4,
-            (0, 255, 0),
-            3
+            0.55,
+            color,
+            2
         )
 
+    # =====================================================
+    # DRAW DRAGGABLE OBJECTS
+    # =====================================================
 
-        cv2.putText(
+    for obj in objects:
+
+        if obj["done"]:
+            continue
+
+        color = COLORS[obj["name"]]
+
+        x = obj["x"]
+        y = obj["y"]
+
+        # Highlight selected object
+        if selected == obj:
+
+            cv2.circle(
+                frame,
+                (x, y),
+                OBJECT_RADIUS + 8,
+                (255, 255, 255),
+                3
+            )
+
+        # Colored circle
+        cv2.circle(
             frame,
-            "Press R to restart",
-            (470, 390),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.9,
+            (x, y),
+            OBJECT_RADIUS,
+            color,
+            -1
+        )
+
+        # White border
+        cv2.circle(
+            frame,
+            (x, y),
+            OBJECT_RADIUS,
             (255, 255, 255),
             2
         )
 
+        # Object label
+        text_size = cv2.getTextSize(
+            obj["name"],
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            2
+        )[0]
 
-    # ========================================================
-    # Display
-    # ========================================================
+        cv2.putText(
+            frame,
+            obj["name"],
+            (
+                x - text_size[0] // 2,
+                y + 55
+            ),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            color,
+            2
+        )
+
+    # =====================================================
+    # STATUS
+    # =====================================================
+
+    if pinching:
+
+        status = "GRABBING"
+
+    else:
+
+        status = "READY"
+
+    cv2.putText(
+        frame,
+        status,
+        (30, 690),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2
+    )
+
+    cv2.putText(
+        frame,
+        "R = Restart     ESC = Exit",
+        (960, 690),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (230, 230, 230),
+        2
+    )
+
+    # =====================================================
+    # COMPLETION MESSAGE
+    # =====================================================
+
+    if score == 5:
+
+        cv2.rectangle(
+            frame,
+            (390, 280),
+            (890, 390),
+            (20, 20, 20),
+            -1
+        )
+
+        cv2.rectangle(
+            frame,
+            (390, 280),
+            (890, 390),
+            (0, 255, 0),
+            3
+        )
+
+        cv2.putText(
+            frame,
+            "GAME COMPLETED!",
+            (475, 335),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.1,
+            (0, 255, 0),
+            3
+        )
+
+        cv2.putText(
+            frame,
+            "Press R to Restart",
+            (520, 370),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2
+        )
+
+    # =====================================================
+    # SHOW
+    # =====================================================
 
     cv2.imshow(
         "Virtual Drag and Drop Game",
         frame
     )
 
-
-    # ========================================================
-    # Keyboard controls
-    # ========================================================
-
     key = cv2.waitKey(1) & 0xFF
 
-
-    # ESC → exit
     if key == 27:
         break
 
-
-    # R → restart
-    if key == ord("r"):
-
-        objects = create_objects()
-
-        score = 0
-
-        dragged_object = None
-
-        game_completed = False
+    if key == ord("r") or key == ord("R"):
+        reset_game()
 
 
-# ============================================================
-# Cleanup
-# ============================================================
+# =========================================================
+# CLEANUP
+# =========================================================
 
 cap.release()
-
-cv2.destroyAllWindows()
-
 hands.close()
+cv2.destroyAllWindows()
